@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Dados locais
+metrics.db
+*.db
+
+# Modelos baixados localmente
+models/
+
+# Qdrant storage local (se usar persistência em disco)
+qdrant_storage/
+
+# Env vars
+.env
+.env.*
+!.env.example
