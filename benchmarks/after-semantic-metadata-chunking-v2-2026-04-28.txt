@@ -1,0 +1,26 @@
+Running 15 benchmark queries...
+
+✓ [0.658]   2276ms ~ 450tok  how to create a chain in LangChain
+✓ [0.677]   2205ms ~ 450tok  LangGraph state management
+✓ [0.688]   2233ms ~ 450tok  LangSmith tracing setup
+✓ [0.750]   2227ms ~ 450tok  tool calling with LangChain agents
+✓ [0.727]   2275ms ~ 450tok  LangChain memory and conversation history
+✓ [0.696]   2225ms ~ 450tok  streaming responses in LangChain
+✓ [0.744]   2371ms ~ 450tok  LangGraph checkpointing persistence
+✗ [0.685]   2389ms ~ 450tok  custom callbacks in LangChain
+✓ [0.726]   2399ms ~ 450tok  LangSmith evaluation datasets
+✗ [0.609]   2256ms ~ 450tok  LangChain Expression Language LCEL
+✓ [0.745]   2298ms ~ 450tok  how to deploy a LangGraph agent
+✓ [0.725]   2267ms ~ 450tok  LangChain output parsers
+✓ [0.692]   2338ms ~ 450tok  LangChain retriever interface
+✓ [0.663]   2389ms ~ 348tok  LangSmith prompt hub
+✗ [0.695]   2265ms ~ 450tok  LangGraph multi-agent orchestration
+
+─────────────────────────────────────────────────────────────────
+Hit rate      : 12/15 (80%)
+Avg score     : 0.699  (threshold: 0.6)
+Avg latency   : 2294ms
+Avg tokens/q  : 443
+
+Hit rate ≥ 80% = retrieval confiável
+Avg score ≥ 0.65 = embeddings bem alinhados com a doc
