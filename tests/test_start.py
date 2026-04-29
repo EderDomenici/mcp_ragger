@@ -15,6 +15,7 @@ class StartConfigTests(unittest.TestCase):
             config = start.resolve_config(project_dir, env={}, platform_name="linux")
 
             self.assertEqual(config.project_dir, project_dir)
+            self.assertEqual(config.embedding_provider, "google")
             self.assertEqual(config.model, project_dir / "models" / start.MODEL_FILENAME)
             self.assertEqual(config.python, project_dir / ".venv" / "bin" / "python")
             self.assertEqual(config.embed_port, 8080)
@@ -47,17 +48,20 @@ class StartConfigTests(unittest.TestCase):
                 "LLAMA_SERVER": "/opt/llama/bin/llama-server",
                 "MODEL": "/models/custom.gguf",
                 "EMBED_PORT": "9090",
+                "EMBEDDING_PROVIDER": "llamacpp",
             }
 
             config = start.resolve_config(project_dir, env=env, platform_name="linux")
 
             self.assertEqual(config.llama_server, Path("/opt/llama/bin/llama-server"))
+            self.assertEqual(config.embedding_provider, "llamacpp")
             self.assertEqual(config.model, Path("/models/custom.gguf"))
             self.assertEqual(config.embed_port, 9090)
 
     def test_llama_command_is_argument_list_without_shell_quoting(self):
         config = start.StartConfig(
             project_dir=Path("/repo"),
+            embedding_provider="llamacpp",
             llama_server=Path("/bin/llama-server"),
             model=Path("/repo/models/model.gguf"),
             python=Path("/repo/.venv/bin/python"),
@@ -82,6 +86,7 @@ class StartConfigTests(unittest.TestCase):
             model.write_text("fake model")
             config = start.StartConfig(
                 project_dir=Path(tmp),
+                embedding_provider="llamacpp",
                 llama_server=Path("/bin/llama-server"),
                 model=model,
                 python=Path(tmp) / ".venv" / "bin" / "python",

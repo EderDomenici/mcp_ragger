@@ -1,3 +1,5 @@
 mcp
 qdrant-client
 httpx
+langchain-google-genai
+python-dotenv

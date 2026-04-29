@@ -1,6 +1,7 @@
 import time
 import re
 import argparse
+import os
 import sys
 import httpx
 from dataclasses import dataclass, field
@@ -14,10 +15,16 @@ SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
 
+from langchain_rag_mcp.embeddings import create_embeddings
+from langchain_rag_mcp.env import load_project_env
 from langchain_rag_mcp.loaders import fetch_documents
+
+load_project_env()
 
 QDRANT_URL = "http://localhost:6333"
 LLAMACPP_URL = "http://localhost:8080/v1/embeddings"
+EMBEDDING_PROVIDER = "google"
+GOOGLE_EMBEDDING_MODEL = "models/gemini-embedding-001"
 COLLECTION = "langchain_docs"
 DOCS_URL = "https://docs.langchain.com/llms-full.txt"
 
@@ -400,38 +407,42 @@ def embed_text(chunk: dict) -> str:
     return "\n".join(metadata)
 
 
-def embed_batch(texts: list[str]) -> list[list[float]]:
+def embed_batch(texts: list[str], embeddings) -> list[list[float]]:
     capped = [t[:EMBED_INPUT_CAP] for t in texts]
+    if not _is_llamacpp_embeddings(embeddings):
+        return embeddings.embed_documents(capped)
+
     try:
-        response = httpx.post(
-            LLAMACPP_URL,
-            json={"input": capped},
-            timeout=120,
-        )
-        response.raise_for_status()
-        data = response.json()["data"]
-        data.sort(key=lambda x: x["index"])
-        return [item["embedding"] for item in data]
+        return embeddings.embed_documents(capped)
     except httpx.HTTPStatusError:
         if len(capped) == 1:
-            return [_embed_one_with_fallback(capped[0])]
+            return [_embed_one_with_fallback(capped[0], embeddings)]
 
         midpoint = len(capped) // 2
-        return embed_batch(capped[:midpoint]) + embed_batch(capped[midpoint:])
+        return embed_batch(capped[:midpoint], embeddings) + embed_batch(capped[midpoint:], embeddings)
 
 
-def _embed_one_with_fallback(text: str) -> list[float]:
+def _is_llamacpp_embeddings(embeddings) -> bool:
+    return embeddings.__class__.__name__ == "LlamaCppEmbeddings"
+
+
+def _embed_one_with_fallback(text: str, embeddings) -> list[float]:
+    last_error = None
     for cap in (800, 500, 300):
-        response = httpx.post(
-            LLAMACPP_URL,
-            json={"input": [text[:cap]]},
-            timeout=120,
-        )
-        if response.status_code < 500:
-            response.raise_for_status()
-            return response.json()["data"][0]["embedding"]
-    response.raise_for_status()
+        try:
+            return embeddings.embed_query(text[:cap])
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code < 500:
+                raise
+            last_error = exc
+    if last_error:
+        raise last_error
     raise RuntimeError("Embedding fallback failed")
+
+
+def _env_int(key: str) -> int | None:
+    value = os.getenv(key)
+    return int(value) if value else None
 
 
 def _print_chunk_stats(chunks: list[dict]) -> None:
@@ -448,9 +459,19 @@ def run():
     parser.add_argument("--limit", type=int, default=0, help="Indexa apenas os N primeiros chunks para teste.")
     parser.add_argument("--source-url", default=DOCS_URL, help="URL fonte: llms-full.txt, llms.txt, .md ou .mdx.")
     parser.add_argument("--source-limit", type=int, default=0, help="Limita documentos baixados de um llms.txt.")
+    parser.add_argument("--embedding-provider", default=os.getenv("EMBEDDING_PROVIDER", EMBEDDING_PROVIDER))
+    parser.add_argument("--google-embedding-model", default=os.getenv("GOOGLE_EMBEDDING_MODEL", GOOGLE_EMBEDDING_MODEL))
+    parser.add_argument("--google-embedding-dimensions", type=int, default=_env_int("GOOGLE_EMBEDDING_DIMENSIONS"))
+    parser.add_argument("--llamacpp-url", default=os.getenv("LLAMACPP_URL", LLAMACPP_URL))
     args = parser.parse_args()
 
     qdrant = QdrantClient(url=QDRANT_URL)
+    embeddings = create_embeddings(
+        args.embedding_provider,
+        llamacpp_url=args.llamacpp_url,
+        google_model=args.google_embedding_model,
+        google_output_dimensionality=args.google_embedding_dimensions,
+    )
 
     text = download_docs(args.source_url, source_limit=args.source_limit or None)
 
@@ -464,7 +485,7 @@ def run():
         print(f"  limiting index to {len(chunks)} chunks")
 
     print("Getting embedding dimension...")
-    dim = len(embed_batch(["test"])[0])
+    dim = len(embed_batch(["test"], embeddings)[0])
     print(f"  Embedding dim: {dim}")
 
     print(f"Creating collection '{COLLECTION}'...")
@@ -481,7 +502,7 @@ def run():
 
     for start in range(0, len(chunks), EMBED_BATCH):
         batch = chunks[start : start + EMBED_BATCH]
-        vectors = embed_batch([embed_text(c) for c in batch])
+        vectors = embed_batch([embed_text(c) for c in batch], embeddings)
 
         for j, (chunk, vector) in enumerate(zip(batch, vectors)):
             points.append(

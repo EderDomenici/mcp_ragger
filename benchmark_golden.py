@@ -8,6 +8,7 @@ answer terms for hand-written questions.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import statistics
 import sys
@@ -15,7 +16,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
 from qdrant_client import QdrantClient
 
 ROOT = Path(__file__).resolve().parent
@@ -23,11 +23,17 @@ SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
 
+from langchain_rag_mcp.embeddings import create_embeddings
+from langchain_rag_mcp.env import load_project_env
 from langchain_rag_mcp.retrieval import query_term_coverage, rerank
+
+load_project_env()
 
 
 QDRANT_URL = "http://localhost:6333"
 LLAMACPP_URL = "http://localhost:8080/v1/embeddings"
+EMBEDDING_PROVIDER = "google"
+GOOGLE_EMBEDDING_MODEL = "models/gemini-embedding-001"
 COLLECTION = "langchain_docs"
 CANDIDATE_K = 30
 TOP_K = 5
@@ -234,11 +240,9 @@ def evaluate_results(
     )
 
 
-def run_query(case: GoldenCase, qdrant: QdrantClient) -> GoldenResult:
+def run_query(case: GoldenCase, qdrant: QdrantClient, embeddings) -> GoldenResult:
     t0 = time.perf_counter()
-    response = httpx.post(LLAMACPP_URL, json={"input": [case.query]}, timeout=30)
-    response.raise_for_status()
-    query_vector = response.json()["data"][0]["embedding"]
+    query_vector = embeddings.embed_query(case.query)
 
     points = qdrant.query_points(
         collection_name=COLLECTION,
@@ -259,11 +263,19 @@ def run() -> int:
     args = parser.parse_args()
 
     qdrant = QdrantClient(url=QDRANT_URL, check_compatibility=False)
+    embeddings = create_embeddings(
+        os.getenv("EMBEDDING_PROVIDER", EMBEDDING_PROVIDER),
+        llamacpp_url=os.getenv("LLAMACPP_URL", LLAMACPP_URL),
+        google_model=os.getenv("GOOGLE_EMBEDDING_MODEL", GOOGLE_EMBEDDING_MODEL),
+        google_output_dimensionality=int(os.getenv("GOOGLE_EMBEDDING_DIMENSIONS"))
+        if os.getenv("GOOGLE_EMBEDDING_DIMENSIONS")
+        else None,
+    )
     print(f"Running {len(GOLDEN_CASES)} golden retrieval cases...\n")
 
     results = []
     for case in GOLDEN_CASES:
-        result = run_query(case, qdrant)
+        result = run_query(case, qdrant, embeddings)
         results.append(result)
         status = "✓" if result.passed else "✗"
         rank = "-" if result.rank is None else str(result.rank)

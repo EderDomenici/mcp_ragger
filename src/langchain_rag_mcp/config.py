@@ -1,11 +1,23 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
+
+from .env import load_project_env
+
+
+def _env_int(env: Mapping[str, str], key: str) -> int | None:
+    value = env.get(key)
+    return int(value) if value else None
 
 
 @dataclass(frozen=True)
 class Settings:
     qdrant_url: str = "http://localhost:6333"
+    embedding_provider: str = "google"
     llamacpp_url: str = "http://localhost:8080/v1/embeddings"
+    google_embedding_model: str = "models/gemini-embedding-001"
+    google_output_dimensionality: int | None = None
     collection: str = "langchain_docs"
     top_k: int = 3
     candidate_k: int = 20
@@ -13,3 +25,17 @@ class Settings:
     min_score: float = 0.60
     min_query_term_coverage: float = 0.75
     db_path: Path = Path(__file__).resolve().parents[2] / "metrics.db"
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
+        if env is None:
+            load_project_env()
+            env = os.environ
+        return cls(
+            qdrant_url=env.get("QDRANT_URL", cls.qdrant_url),
+            embedding_provider=env.get("EMBEDDING_PROVIDER", cls.embedding_provider),
+            llamacpp_url=env.get("LLAMACPP_URL", cls.llamacpp_url),
+            google_embedding_model=env.get("GOOGLE_EMBEDDING_MODEL", cls.google_embedding_model),
+            google_output_dimensionality=_env_int(env, "GOOGLE_EMBEDDING_DIMENSIONS"),
+            collection=env.get("QDRANT_COLLECTION", cls.collection),
+        )

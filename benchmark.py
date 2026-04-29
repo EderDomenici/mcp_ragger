@@ -13,12 +13,12 @@ Uso:
 """
 
 import sys
+import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
 from qdrant_client import QdrantClient
 
 ROOT = Path(__file__).resolve().parent
@@ -26,10 +26,16 @@ SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
 
+from langchain_rag_mcp.embeddings import create_embeddings
+from langchain_rag_mcp.env import load_project_env
 from langchain_rag_mcp.retrieval import rerank
+
+load_project_env()
 
 QDRANT_URL = "http://localhost:6333"
 LLAMACPP_URL = "http://localhost:8080/v1/embeddings"
+EMBEDDING_PROVIDER = "google"
+GOOGLE_EMBEDDING_MODEL = "models/gemini-embedding-001"
 COLLECTION = "langchain_docs"
 TOP_K = 3
 CANDIDATE_K = 20
@@ -139,12 +145,10 @@ def _source_hit(results, expected_sources: list[str], top_n: int) -> bool | None
     return False
 
 
-def run_query(case: Case) -> Result:
+def run_query(case: Case, embeddings) -> Result:
     t0 = time.perf_counter()
 
-    resp = httpx.post(LLAMACPP_URL, json={"input": [case.query]}, timeout=30)
-    resp.raise_for_status()
-    query_vector = resp.json()["data"][0]["embedding"]
+    query_vector = embeddings.embed_query(case.query)
 
     response = qdrant.query_points(
         collection_name=COLLECTION,
@@ -185,11 +189,19 @@ def run_query(case: Case) -> Result:
 
 
 def run():
+    embeddings = create_embeddings(
+        os.getenv("EMBEDDING_PROVIDER", EMBEDDING_PROVIDER),
+        llamacpp_url=os.getenv("LLAMACPP_URL", LLAMACPP_URL),
+        google_model=os.getenv("GOOGLE_EMBEDDING_MODEL", GOOGLE_EMBEDDING_MODEL),
+        google_output_dimensionality=int(os.getenv("GOOGLE_EMBEDDING_DIMENSIONS"))
+        if os.getenv("GOOGLE_EMBEDDING_DIMENSIONS")
+        else None,
+    )
     print(f"Running {len(CASES)} benchmark queries...\n")
     results: list[Result] = []
 
     for case in CASES:
-        r = run_query(case)
+        r = run_query(case, embeddings)
         results.append(r)
         status = "✓" if r.passed else "✗"
         source = ""

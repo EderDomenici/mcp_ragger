@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from .env import load_project_env
+
 
 MODEL_FILENAME = "nomic-embed-text-v1.5.Q8_0.gguf"
 QDRANT_READY_URL = "http://localhost:6333/readyz"
@@ -19,6 +21,7 @@ QDRANT_READY_URL = "http://localhost:6333/readyz"
 @dataclass(frozen=True)
 class StartConfig:
     project_dir: Path
+    embedding_provider: str
     llama_server: Path
     model: Path
     python: Path
@@ -67,12 +70,15 @@ def resolve_config(
     env: Mapping[str, str] | None = None,
     platform_name: str | None = None,
 ) -> StartConfig:
-    env = os.environ if env is None else env
+    if env is None:
+        load_project_env()
+        env = os.environ
     platform_name = sys.platform if platform_name is None else platform_name
     project_dir = project_dir.resolve() if project_dir.exists() else project_dir
 
     return StartConfig(
         project_dir=project_dir,
+        embedding_provider=env.get("EMBEDDING_PROVIDER", "google"),
         llama_server=_env_path(env, "LLAMA_SERVER", _default_llama_server(platform_name)),
         model=_env_path(env, "MODEL", _default_model(project_dir)),
         python=_env_path(env, "PYTHON", _default_python(project_dir, platform_name)),
@@ -156,10 +162,15 @@ def _start_llama(config: StartConfig) -> subprocess.Popen[bytes]:
 def main(project_dir: Path) -> int:
     config = resolve_config(project_dir)
     _start_qdrant(config)
-    llama_proc = _start_llama(config)
+    llama_proc = None
+    if config.embedding_provider.strip().lower() in {"llamacpp", "llama.cpp", "local"}:
+        llama_proc = _start_llama(config)
 
     print("")
     print("Tudo pronto. Pode abrir o Claude Code.")
     print(f"Para parar: docker compose -f \"{config.project_dir / 'docker-compose.yml'}\" stop")
-    print(f"Depois encerre o llama-server pelo PID {llama_proc.pid}.")
+    if llama_proc:
+        print(f"Depois encerre o llama-server pelo PID {llama_proc.pid}.")
+    else:
+        print("Embeddings configurados para Google Gemini API; defina GOOGLE_API_KEY antes de consultar/indexar.")
     return 0
