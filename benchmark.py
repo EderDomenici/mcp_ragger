@@ -12,14 +12,21 @@ Uso:
     .venv/bin/python benchmark.py
 """
 
-import re
 import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 from qdrant_client import QdrantClient
+
+ROOT = Path(__file__).resolve().parent
+SRC = ROOT / "src"
+if SRC.exists():
+    sys.path.insert(0, str(SRC))
+
+from langchain_rag_mcp.retrieval import rerank
 
 QDRANT_URL = "http://localhost:6333"
 LLAMACPP_URL = "http://localhost:8080/v1/embeddings"
@@ -33,19 +40,6 @@ qdrant = QdrantClient(url=QDRANT_URL)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
-
-STOP_WORDS = {
-    "the",
-    "and",
-    "with",
-    "how",
-    "for",
-    "from",
-    "langchain",
-    "langgraph",
-    "langsmith",
-}
-
 
 @dataclass(frozen=True)
 class Case:
@@ -134,31 +128,6 @@ class Result:
     passed: bool
 
 
-def _tokens(text: str) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", text.lower())
-        if token not in STOP_WORDS
-    }
-
-
-def _rerank(query: str, results):
-    query_tokens = _tokens(query)
-    ranked = []
-    for result in results:
-        payload = result.payload or {}
-        haystack = " ".join(
-            str(payload.get(key, ""))
-            for key in ("title", "breadcrumb", "source", "content_type", "symbols", "content")
-        )
-        overlap = len(query_tokens & _tokens(haystack))
-        exact_bonus = 0.08 if query.lower() in haystack.lower() else 0.0
-        ranked.append((result.score + (0.025 * overlap) + exact_bonus, result))
-
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [result for _, result in ranked[:TOP_K]]
-
-
 def _source_hit(results, expected_sources: list[str], top_n: int) -> bool | None:
     if not expected_sources:
         return None
@@ -185,7 +154,7 @@ def run_query(case: Case) -> Result:
     )
 
     latency_ms = (time.perf_counter() - t0) * 1000
-    results = _rerank(case.query, response.points)
+    results = rerank(case.query, response.points, TOP_K)
 
     if not results:
         return Result(case.category, case.query, latency_ms, 0.0, 0.0, 0, False, False, False, False, False)

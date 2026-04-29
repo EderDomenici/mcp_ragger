@@ -23,3 +23,4 @@ qdrant_storage/
 
 # Configuracao local de agentes
 .claude/settings.local.json
+.codex

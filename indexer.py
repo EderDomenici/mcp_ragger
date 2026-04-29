@@ -1,10 +1,20 @@
 import time
 import re
 import argparse
+import sys
 import httpx
 from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import urlsplit
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
+
+ROOT = Path(__file__).resolve().parent
+SRC = ROOT / "src"
+if SRC.exists():
+    sys.path.insert(0, str(SRC))
+
+from langchain_rag_mcp.loaders import fetch_documents
 
 QDRANT_URL = "http://localhost:6333"
 LLAMACPP_URL = "http://localhost:8080/v1/embeddings"
@@ -57,11 +67,50 @@ class Chunk:
     next_chunk_id: str = ""
 
 
-def download_docs() -> str:
-    print(f"Downloading {DOCS_URL} ...")
-    response = httpx.get(DOCS_URL, timeout=60, follow_redirects=True)
+def _fetch_text(url: str) -> str:
+    response = httpx.get(url, timeout=60, follow_redirects=True)
     response.raise_for_status()
     return response.text
+
+
+def _is_llms_index_url(source_url: str) -> bool:
+    return urlsplit(source_url).path.endswith("llms.txt")
+
+
+def _format_loaded_document(document) -> str:
+    content = document.content.strip()
+    lines = content.splitlines()
+    for index, line in enumerate(lines):
+        if HEADING_RE.match(line):
+            return "\n".join(
+                lines[: index + 1]
+                + [f"Source: {document.source}"]
+                + lines[index + 1 :]
+            ).strip()
+
+    title = document.source.rstrip("/").rsplit("/", 1)[-1] or document.source
+    return f"# {title}\nSource: {document.source}\n\n{content}"
+
+
+def _format_loaded_documents(documents) -> str:
+    return "\n\n---\n\n".join(_format_loaded_document(document) for document in documents)
+
+
+def download_docs(source_url: str = DOCS_URL, source_limit: int | None = None) -> str:
+    print(f"Downloading {source_url} ...", flush=True)
+    if _is_llms_index_url(source_url):
+        documents = fetch_documents(
+            source_url,
+            _fetch_text,
+            limit=source_limit,
+            on_progress=lambda current, total, url: print(
+                f"  fetching linked doc {current}/{total}: {url}",
+                flush=True,
+            ),
+        )
+        return _format_loaded_documents(documents)
+
+    return _fetch_text(source_url)
 
 
 def _extract_source(lines: list[str]) -> str:
@@ -397,11 +446,13 @@ def run():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stats-only", action="store_true", help="Baixa e chunkifica sem recriar o indice.")
     parser.add_argument("--limit", type=int, default=0, help="Indexa apenas os N primeiros chunks para teste.")
+    parser.add_argument("--source-url", default=DOCS_URL, help="URL fonte: llms-full.txt, llms.txt, .md ou .mdx.")
+    parser.add_argument("--source-limit", type=int, default=0, help="Limita documentos baixados de um llms.txt.")
     args = parser.parse_args()
 
     qdrant = QdrantClient(url=QDRANT_URL)
 
-    text = download_docs()
+    text = download_docs(args.source_url, source_limit=args.source_limit or None)
 
     print("Chunking docs...")
     chunks = chunk_docs(text)
