@@ -8,7 +8,6 @@ answer terms for hand-written questions.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import statistics
 import sys
@@ -23,18 +22,10 @@ SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
 
+from langchain_rag_mcp.config import Settings
 from langchain_rag_mcp.embeddings import create_embeddings
-from langchain_rag_mcp.env import load_project_env
 from langchain_rag_mcp.retrieval import query_term_coverage, rerank
 
-load_project_env()
-
-
-QDRANT_URL = "http://localhost:6333"
-LLAMACPP_URL = "http://localhost:8080/v1/embeddings"
-EMBEDDING_PROVIDER = "google"
-GOOGLE_EMBEDDING_MODEL = "models/gemini-embedding-001"
-COLLECTION = "langchain_docs"
 CANDIDATE_K = 30
 TOP_K = 5
 CHUNK_CAP = 900
@@ -207,6 +198,8 @@ def evaluate_results(
     combined_text: str,
     score: float,
     latency_ms: float,
+    min_score: float = MIN_SCORE,
+    min_query_term_coverage: float = MIN_QUERY_TERM_COVERAGE,
 ) -> GoldenResult:
     rank = _rank(results, case.expected_sources)
     recall_at_3 = rank is not None and rank <= 3
@@ -216,11 +209,11 @@ def evaluate_results(
     coverage = query_term_coverage(case.query, results)
 
     if case.negative:
-        passed = (score <= case.max_score or coverage < MIN_QUERY_TERM_COVERAGE) and rank is None
+        passed = (score <= case.max_score or coverage < min_query_term_coverage) and rank is None
     else:
         passed = (
-            score >= MIN_SCORE
-            and coverage >= MIN_QUERY_TERM_COVERAGE
+            score >= min_score
+            and coverage >= min_query_term_coverage
             and recall_at_3
             and required_terms_hit
         )
@@ -240,21 +233,30 @@ def evaluate_results(
     )
 
 
-def run_query(case: GoldenCase, qdrant: QdrantClient, embeddings) -> GoldenResult:
+def run_query(case: GoldenCase, qdrant: QdrantClient, embeddings, settings: Settings) -> GoldenResult:
     t0 = time.perf_counter()
     query_vector = embeddings.embed_query(case.query)
 
     points = qdrant.query_points(
-        collection_name=COLLECTION,
+        collection_name=settings.collection,
         query=query_vector,
-        limit=CANDIDATE_K,
+        limit=max(settings.candidate_k, CANDIDATE_K),
         with_payload=True,
     ).points
     latency_ms = (time.perf_counter() - t0) * 1000
-    results = rerank(case.query, points, TOP_K)
+    results = rerank(case.query, points, max(settings.top_k, TOP_K))
     score = results[0].score if results else 0.0
-    combined = "\n".join(str((r.payload or {}).get("content", ""))[:CHUNK_CAP] for r in results)
-    return evaluate_results(case, results, combined, score, latency_ms)
+    chunk_cap = max(settings.chunk_cap, CHUNK_CAP)
+    combined = "\n".join(str((r.payload or {}).get("content", ""))[:chunk_cap] for r in results)
+    return evaluate_results(
+        case,
+        results,
+        combined,
+        score,
+        latency_ms,
+        min_score=settings.min_score,
+        min_query_term_coverage=settings.min_query_term_coverage,
+    )
 
 
 def run() -> int:
@@ -262,20 +264,19 @@ def run() -> int:
     parser.add_argument("--fail-under", type=float, default=0.75)
     args = parser.parse_args()
 
-    qdrant = QdrantClient(url=QDRANT_URL, check_compatibility=False)
+    settings = Settings.from_env()
+    qdrant = QdrantClient(url=settings.qdrant_url, check_compatibility=False)
     embeddings = create_embeddings(
-        os.getenv("EMBEDDING_PROVIDER", EMBEDDING_PROVIDER),
-        llamacpp_url=os.getenv("LLAMACPP_URL", LLAMACPP_URL),
-        google_model=os.getenv("GOOGLE_EMBEDDING_MODEL", GOOGLE_EMBEDDING_MODEL),
-        google_output_dimensionality=int(os.getenv("GOOGLE_EMBEDDING_DIMENSIONS"))
-        if os.getenv("GOOGLE_EMBEDDING_DIMENSIONS")
-        else None,
+        settings.embedding_provider,
+        llamacpp_url=settings.llamacpp_url,
+        google_model=settings.google_embedding_model,
+        google_output_dimensionality=settings.google_output_dimensionality,
     )
     print(f"Running {len(GOLDEN_CASES)} golden retrieval cases...\n")
 
     results = []
     for case in GOLDEN_CASES:
-        result = run_query(case, qdrant, embeddings)
+        result = run_query(case, qdrant, embeddings, settings)
         results.append(result)
         status = "✓" if result.passed else "✗"
         rank = "-" if result.rank is None else str(result.rank)

@@ -1,7 +1,6 @@
 import time
 import re
 import argparse
-import os
 import sys
 import httpx
 from dataclasses import dataclass, field
@@ -15,18 +14,11 @@ SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
 
+from langchain_rag_mcp.config import Settings
 from langchain_rag_mcp.embeddings import create_embeddings
-from langchain_rag_mcp.env import load_project_env
 from langchain_rag_mcp.loaders import fetch_documents
 
-load_project_env()
-
-QDRANT_URL = "http://localhost:6333"
-LLAMACPP_URL = "http://localhost:8080/v1/embeddings"
-EMBEDDING_PROVIDER = "google"
-GOOGLE_EMBEDDING_MODEL = "models/gemini-embedding-001"
-COLLECTION = "langchain_docs"
-DOCS_URL = "https://docs.langchain.com/llms-full.txt"
+DOCS_URL = Settings.docs_url
 
 MAX_CHUNK_CHARS = 2600  # chunk por pagina/fonte, mas ainda especifico o bastante
 OVERLAP_CHARS = 120     # continuidade pequena entre chunks da mesma pagina
@@ -103,7 +95,8 @@ def _format_loaded_documents(documents) -> str:
     return "\n\n---\n\n".join(_format_loaded_document(document) for document in documents)
 
 
-def download_docs(source_url: str = DOCS_URL, source_limit: int | None = None) -> str:
+def download_docs(source_url: str | None = None, source_limit: int | None = None) -> str:
+    source_url = source_url or Settings.docs_url
     print(f"Downloading {source_url} ...", flush=True)
     if _is_llms_index_url(source_url):
         documents = fetch_documents(
@@ -440,11 +433,6 @@ def _embed_one_with_fallback(text: str, embeddings) -> list[float]:
     raise RuntimeError("Embedding fallback failed")
 
 
-def _env_int(key: str) -> int | None:
-    value = os.getenv(key)
-    return int(value) if value else None
-
-
 def _print_chunk_stats(chunks: list[dict]) -> None:
     avg_chars = sum(c["char_count"] for c in chunks) / len(chunks)
     code_chunks = sum(1 for c in chunks if c["has_code"])
@@ -454,18 +442,19 @@ def _print_chunk_stats(chunks: list[dict]) -> None:
 
 
 def run():
+    settings = Settings.from_env()
     parser = argparse.ArgumentParser()
     parser.add_argument("--stats-only", action="store_true", help="Baixa e chunkifica sem recriar o indice.")
     parser.add_argument("--limit", type=int, default=0, help="Indexa apenas os N primeiros chunks para teste.")
-    parser.add_argument("--source-url", default=DOCS_URL, help="URL fonte: llms-full.txt, llms.txt, .md ou .mdx.")
+    parser.add_argument("--source-url", default=settings.docs_url, help="URL fonte: llms-full.txt, llms.txt, .md ou .mdx.")
     parser.add_argument("--source-limit", type=int, default=0, help="Limita documentos baixados de um llms.txt.")
-    parser.add_argument("--embedding-provider", default=os.getenv("EMBEDDING_PROVIDER", EMBEDDING_PROVIDER))
-    parser.add_argument("--google-embedding-model", default=os.getenv("GOOGLE_EMBEDDING_MODEL", GOOGLE_EMBEDDING_MODEL))
-    parser.add_argument("--google-embedding-dimensions", type=int, default=_env_int("GOOGLE_EMBEDDING_DIMENSIONS"))
-    parser.add_argument("--llamacpp-url", default=os.getenv("LLAMACPP_URL", LLAMACPP_URL))
+    parser.add_argument("--embedding-provider", default=settings.embedding_provider)
+    parser.add_argument("--google-embedding-model", default=settings.google_embedding_model)
+    parser.add_argument("--google-embedding-dimensions", type=int, default=settings.google_output_dimensionality)
+    parser.add_argument("--llamacpp-url", default=settings.llamacpp_url)
     args = parser.parse_args()
 
-    qdrant = QdrantClient(url=QDRANT_URL)
+    qdrant = QdrantClient(url=settings.qdrant_url)
     embeddings = create_embeddings(
         args.embedding_provider,
         llamacpp_url=args.llamacpp_url,
@@ -488,11 +477,11 @@ def run():
     dim = len(embed_batch(["test"], embeddings)[0])
     print(f"  Embedding dim: {dim}")
 
-    print(f"Creating collection '{COLLECTION}'...")
-    if qdrant.collection_exists(COLLECTION):
-        qdrant.delete_collection(COLLECTION)
+    print(f"Creating collection '{settings.collection}'...")
+    if qdrant.collection_exists(settings.collection):
+        qdrant.delete_collection(settings.collection)
     qdrant.create_collection(
-        collection_name=COLLECTION,
+        collection_name=settings.collection,
         vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
     )
 
@@ -521,7 +510,7 @@ def run():
 
     print(f"\nUploading to Qdrant...")
     for start in range(0, len(points), UPSERT_BATCH):
-        qdrant.upsert(collection_name=COLLECTION, points=points[start : start + UPSERT_BATCH])
+        qdrant.upsert(collection_name=settings.collection, points=points[start : start + UPSERT_BATCH])
 
     total = time.perf_counter() - t0
     print(f"Done — {len(points)} chunks indexed in {total:.0f}s")

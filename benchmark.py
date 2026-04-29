@@ -13,7 +13,6 @@ Uso:
 """
 
 import sys
-import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -26,23 +25,9 @@ SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
 
+from langchain_rag_mcp.config import Settings
 from langchain_rag_mcp.embeddings import create_embeddings
-from langchain_rag_mcp.env import load_project_env
 from langchain_rag_mcp.retrieval import rerank
-
-load_project_env()
-
-QDRANT_URL = "http://localhost:6333"
-LLAMACPP_URL = "http://localhost:8080/v1/embeddings"
-EMBEDDING_PROVIDER = "google"
-GOOGLE_EMBEDDING_MODEL = "models/gemini-embedding-001"
-COLLECTION = "langchain_docs"
-TOP_K = 3
-CANDIDATE_K = 20
-CHUNK_CAP = 600
-SCORE_THRESHOLD = 0.60
-
-qdrant = QdrantClient(url=QDRANT_URL)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -145,32 +130,32 @@ def _source_hit(results, expected_sources: list[str], top_n: int) -> bool | None
     return False
 
 
-def run_query(case: Case, embeddings) -> Result:
+def run_query(case: Case, qdrant: QdrantClient, embeddings, settings: Settings) -> Result:
     t0 = time.perf_counter()
 
     query_vector = embeddings.embed_query(case.query)
 
     response = qdrant.query_points(
-        collection_name=COLLECTION,
+        collection_name=settings.collection,
         query=query_vector,
-        limit=CANDIDATE_K,
+        limit=settings.candidate_k,
         with_payload=True,
     )
 
     latency_ms = (time.perf_counter() - t0) * 1000
-    results = rerank(case.query, response.points, TOP_K)
+    results = rerank(case.query, response.points, settings.top_k)
 
     if not results:
         return Result(case.category, case.query, latency_ms, 0.0, 0.0, 0, False, False, False, False, False)
 
     scores = [r.score for r in results]
-    combined = " ".join(r.payload.get("content", "")[:CHUNK_CAP] for r in results).lower()
+    combined = " ".join(r.payload.get("content", "")[: settings.chunk_cap] for r in results).lower()
     tokens_est = len(combined) // 4
 
     keyword_hit = any(kw.lower() in combined for kw in case.keywords)
     top1_source_hit = _source_hit(results, case.source_any, 1)
     top3_source_hit = _source_hit(results, case.source_any, 3)
-    pass_threshold = scores[0] >= SCORE_THRESHOLD
+    pass_threshold = scores[0] >= settings.min_score
     passed = pass_threshold and keyword_hit and (top3_source_hit is not False)
 
     return Result(
@@ -189,19 +174,19 @@ def run_query(case: Case, embeddings) -> Result:
 
 
 def run():
+    settings = Settings.from_env()
+    qdrant = QdrantClient(url=settings.qdrant_url)
     embeddings = create_embeddings(
-        os.getenv("EMBEDDING_PROVIDER", EMBEDDING_PROVIDER),
-        llamacpp_url=os.getenv("LLAMACPP_URL", LLAMACPP_URL),
-        google_model=os.getenv("GOOGLE_EMBEDDING_MODEL", GOOGLE_EMBEDDING_MODEL),
-        google_output_dimensionality=int(os.getenv("GOOGLE_EMBEDDING_DIMENSIONS"))
-        if os.getenv("GOOGLE_EMBEDDING_DIMENSIONS")
-        else None,
+        settings.embedding_provider,
+        llamacpp_url=settings.llamacpp_url,
+        google_model=settings.google_embedding_model,
+        google_output_dimensionality=settings.google_output_dimensionality,
     )
     print(f"Running {len(CASES)} benchmark queries...\n")
     results: list[Result] = []
 
     for case in CASES:
-        r = run_query(case, embeddings)
+        r = run_query(case, qdrant, embeddings, settings)
         results.append(r)
         status = "✓" if r.passed else "✗"
         source = ""
@@ -230,7 +215,7 @@ def run():
     if source_cases:
         print(f"Top1 source   : {top1_source_hits}/{len(source_cases)} ({top1_source_hits / len(source_cases) * 100:.0f}%)")
         print(f"Top3 source   : {top3_source_hits}/{len(source_cases)} ({top3_source_hits / len(source_cases) * 100:.0f}%)")
-    print(f"Avg score     : {avg_score:.3f}  (threshold: {SCORE_THRESHOLD})")
+    print(f"Avg score     : {avg_score:.3f}  (threshold: {settings.min_score})")
     print(f"Avg latency   : {avg_latency:.0f}ms")
     print(f"Avg tokens/q  : {avg_tokens:.0f}")
 
