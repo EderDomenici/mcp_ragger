@@ -9,7 +9,7 @@ Executa um conjunto expandido de queries douradas e valida:
   - Fonte esperada no top 1 / top 3, quando definida
 
 Uso:
-    .venv/bin/python benchmark.py
+    .venv/bin/python scripts/benchmark.py
 """
 
 import sys
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
@@ -175,7 +175,7 @@ def run_query(case: Case, qdrant: QdrantClient, embeddings, settings: Settings) 
 
 def run():
     settings = Settings.from_env()
-    qdrant = QdrantClient(url=settings.qdrant_url)
+    qdrant = QdrantClient(**settings.qdrant_client_kwargs())
     embeddings = create_embeddings(
         settings.embedding_provider,
         llamacpp_url=settings.llamacpp_url,

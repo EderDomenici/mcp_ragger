@@ -1,10 +1,10 @@
 # start.ps1 - wrapper Windows para o start universal testavel.
 $ErrorActionPreference = "Stop"
-$DIR = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$DIR = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Definition)
 
 $venvPython = Join-Path $DIR ".venv\Scripts\python.exe"
 if (Test-Path $venvPython) {
-    & $venvPython (Join-Path $DIR "start.py")
+    & $venvPython (Join-Path $DIR "scripts\start.py")
 } else {
-    python (Join-Path $DIR "start.py")
+    python (Join-Path $DIR "scripts\start.py")
 }

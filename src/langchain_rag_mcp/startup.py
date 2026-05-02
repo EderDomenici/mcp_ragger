@@ -174,3 +174,9 @@ def main(project_dir: Path) -> int:
     else:
         print("Embeddings configurados para Google Gemini API; defina GOOGLE_API_KEY antes de consultar/indexar.")
     return 0
+
+def cli_main() -> int:
+    return main(Path.cwd())
+
+if __name__ == "__main__":
+    sys.exit(cli_main())

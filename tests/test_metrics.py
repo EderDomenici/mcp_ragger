@@ -22,6 +22,14 @@ class MetricsTests(unittest.TestCase):
 
             self.assertEqual(row, ("RunnableConfig", 12.35, 2, 0.91, 0.87, 42))
 
+    def test_metrics_db_parent_directory_is_created(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "data" / "metrics.db"
+
+            metrics.init_metrics_db(db_path)
+
+            self.assertTrue(db_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

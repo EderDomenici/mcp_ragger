@@ -4,22 +4,22 @@ Relatório de uso real do MCP em produção.
 Lê metrics.db gerado pelo mcp_server.py e imprime resumo.
 
 Uso:
-    .venv/bin/python stats.py
-    .venv/bin/python stats.py --last 50   # últimas 50 queries
+    .venv/bin/python scripts/stats.py
+    .venv/bin/python scripts/stats.py --last 50   # últimas 50 queries
 """
 
 import sqlite3
 import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "metrics.db"
+DB_PATH = Path(__file__).resolve().parents[1] / "data" / "metrics.db"
 
 SCORE_WARN = 0.60  # abaixo disso o retrieval é suspeito
 
 
 def run(limit: int | None = None):
     if not DB_PATH.exists():
-        print("metrics.db não encontrado — faça ao menos uma query pelo MCP primeiro.")
+        print(f"{DB_PATH} não encontrado — faça ao menos uma query pelo MCP primeiro.")
         sys.exit(1)
 
     con = sqlite3.connect(DB_PATH)

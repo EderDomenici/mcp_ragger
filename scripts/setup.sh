@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LLAMA_SERVER="/home/linuxbrew/.linuxbrew/bin/llama-server"
 MODELS_DIR="/home/eder/Documentos/Projetos/LLM_CPP"
 MODEL="$MODELS_DIR/nomic-embed-text-v1.5.Q8_0.gguf"
@@ -45,7 +45,7 @@ python3 -m venv "$DIR/.venv"
 
 # --- Indexa ---
 echo "==> Indexando documentação LangChain..."
-"$DIR/.venv/bin/python" "$DIR/indexer.py"
+"$DIR/.venv/bin/python" -m langchain_rag_mcp.indexer
 
 # --- Para o llama-server (só precisava para indexar) ---
 kill $LLAMA_PID 2>/dev/null || true
@@ -59,4 +59,4 @@ echo "  $LLAMA_SERVER -m $MODEL --embedding --pooling mean -ngl 99 --port $EMBED
 echo ""
 echo "Depois registre o MCP:"
 echo ""
-echo "  claude mcp add langchain-rag $DIR/.venv/bin/python $DIR/mcp_server.py"
+echo "  claude mcp add langchain-rag $DIR/.venv/bin/python -m langchain_rag_mcp.server"

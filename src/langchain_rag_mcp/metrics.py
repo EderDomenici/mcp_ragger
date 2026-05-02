@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 def init_metrics_db(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.execute("""
         CREATE TABLE IF NOT EXISTS queries (
@@ -22,6 +23,7 @@ def init_metrics_db(path: Path) -> None:
 
 
 def log_query(path: Path, query: str, latency_ms: float, scores: list[float], tokens_est: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.execute(
         "INSERT INTO queries (ts, query, latency_ms, results, score_top1, score_avg, tokens_est) VALUES (?,?,?,?,?,?,?)",
@@ -37,4 +39,3 @@ def log_query(path: Path, query: str, latency_ms: float, scores: list[float], to
     )
     con.commit()
     con.close()
-

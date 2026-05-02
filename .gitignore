@@ -5,8 +5,16 @@ __pycache__/
 .venv/
 venv/
 env/
+*.egg-info/
+.agentes
+.claude
+.pytest_cache
 
-# Dados locais
+# Data and results
+data/
+!data/.gitkeep
+results/
+!results/.gitkeep
 metrics.db
 *.db
 
@@ -25,3 +33,6 @@ qdrant_storage/
 .claude/settings.local.json
 .codex
 .codex-tmp/
+
+# Documentação interna (visão de produto, notas privadas)
+docs/internal/

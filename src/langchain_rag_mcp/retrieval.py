@@ -1,6 +1,8 @@
 import re
 from typing import Iterable
 
+_PYTHON_RE = re.compile(r"\bpython\b", re.IGNORECASE)
+_JAVASCRIPT_RE = re.compile(r"\bjavascript\b|\btypescript\b|\bnode\.?js\b", re.IGNORECASE)
 
 STOP_WORDS = {
     "the",
@@ -78,6 +80,17 @@ def query_term_coverage(query: str, results: Iterable) -> float:
     return len(query_terms & result_terms) / len(query_terms)
 
 
+def _lang_penalty(query: str, source: str) -> float:
+    source_lower = source.lower()
+    wants_python = bool(_PYTHON_RE.search(query))
+    wants_js = bool(_JAVASCRIPT_RE.search(query))
+    if wants_python and not wants_js and "/javascript/" in source_lower:
+        return -0.10
+    if wants_js and not wants_python and "/python/" in source_lower:
+        return -0.10
+    return 0.0
+
+
 def _langchain_middleware_bonus(query_terms: set[str], source: str) -> float:
     if not {"agent", "middleware"} <= query_terms:
         return 0.0
@@ -97,8 +110,10 @@ def rerank(query: str, results: Iterable, top_k: int) -> list:
         haystack = " ".join(str(payload.get(key, "")) for key in PAYLOAD_RANK_FIELDS)
         overlap = len(query_tokens & tokens(haystack))
         exact_bonus = 0.08 if query.lower() in haystack.lower() else 0.0
-        source_bonus = _langchain_middleware_bonus(query_terms, str(payload.get("source", "")))
-        ranked.append((result.score + (0.025 * overlap) + exact_bonus + source_bonus, result))
+        source = str(payload.get("source", ""))
+        source_bonus = _langchain_middleware_bonus(query_terms, source)
+        lang_penalty = _lang_penalty(query, source)
+        ranked.append((result.score + (0.025 * overlap) + exact_bonus + source_bonus + lang_penalty, result))
 
     ranked.sort(key=lambda item: item[0], reverse=True)
     return [result for _, result in ranked[:top_k]]

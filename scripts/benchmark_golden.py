@@ -1,7 +1,7 @@
 """
 Golden-set benchmark for LangChain documentation retrieval.
 
-Unlike benchmark.py, this checks expected source URLs and all required
+Unlike scripts/benchmark.py, this checks expected source URLs and all required
 answer terms for hand-written questions.
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if SRC.exists():
     sys.path.insert(0, str(SRC))
@@ -265,7 +265,7 @@ def run() -> int:
     args = parser.parse_args()
 
     settings = Settings.from_env()
-    qdrant = QdrantClient(url=settings.qdrant_url, check_compatibility=False)
+    qdrant = QdrantClient(**settings.qdrant_client_kwargs(), check_compatibility=False)
     embeddings = create_embeddings(
         settings.embedding_provider,
         llamacpp_url=settings.llamacpp_url,

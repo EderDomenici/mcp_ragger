@@ -12,7 +12,7 @@ def create_mcp(settings: Settings | None = None):
     init_metrics_db(settings.db_path)
 
     mcp = FastMCP("langchain-rag")
-    qdrant = QdrantClient(url=settings.qdrant_url)
+    qdrant = QdrantClient(**settings.qdrant_client_kwargs())
     embeddings = create_embeddings(
         settings.embedding_provider,
         llamacpp_url=settings.llamacpp_url,
@@ -46,3 +46,8 @@ def create_mcp(settings: Settings | None = None):
 
     return mcp
 
+def main() -> None:
+    create_mcp().run()
+
+if __name__ == "__main__":
+    main()

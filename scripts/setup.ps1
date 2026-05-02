@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Stop"
 
 $PYTHON       = "C:\Users\LIE\AppData\Local\Programs\Python\Python313\python.exe"
-$DIR          = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$DIR          = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Definition)
 $LLAMA_SERVER = "C:\Users\LIE\Documents\Projetos\Llama\llama-server.exe"
 $MODEL_DIR    = "$DIR\models"
 $MODEL        = "$MODEL_DIR\nomic-embed-text-v1.5.Q8_0.gguf"
@@ -53,7 +53,7 @@ Write-Host "==> Criando venv Python..."
 & "$DIR\.venv\Scripts\python.exe" -m pip install -q -r "$DIR\requirements.txt"
 
 Write-Host "==> Indexando documentacao LangChain..."
-& "$DIR\.venv\Scripts\python.exe" "$DIR\indexer.py"
+& "$DIR\.venv\Scripts\python.exe" -m langchain_rag_mcp.indexer
 
 Write-Host "==> Encerrando llama-server..."
 Stop-Process -Id $llamaProc.Id -Force -ErrorAction SilentlyContinue
@@ -70,6 +70,6 @@ Write-Host $startCmd
 Write-Host ""
 Write-Host "Depois registre o MCP (uma unica vez):"
 Write-Host ""
-$mcpCmd = '  claude mcp add langchain-rag "' + $DIR + '\.venv\Scripts\python.exe" "' + $DIR + '\mcp_server.py"'
+$mcpCmd = '  claude mcp add langchain-rag "' + $DIR + '\.venv\Scripts\python.exe" -m langchain_rag_mcp.server'
 Write-Host $mcpCmd
 Write-Host ""

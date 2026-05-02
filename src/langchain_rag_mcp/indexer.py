@@ -3,6 +3,11 @@ import re
 import argparse
 import sys
 import httpx
+import json
+import hashlib
+import random
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -23,8 +28,12 @@ DOCS_URL = Settings.docs_url
 MAX_CHUNK_CHARS = 2600  # chunk por pagina/fonte, mas ainda especifico o bastante
 OVERLAP_CHARS = 120     # continuidade pequena entre chunks da mesma pagina
 EMBED_INPUT_CAP = 1000  # embedding enxuto; payload continua completo
-EMBED_BATCH = 32        # chunks por chamada HTTP; reduz adaptativamente se necessario
+EMBED_BATCH = 100       # chunks por chamada HTTP (Gemini suporta até 100 por request)
+EMBED_WORKERS = 3       # sequencial por padrão; aumentar só com rate limit generoso confirmado
 UPSERT_BATCH = 100      # pontos por upsert no Qdrant
+CHECKPOINT_PATH = ROOT / "data" / "indexer_state.json"
+EMBED_RETRY_ATTEMPTS = 5
+EMBED_RETRY_BACKOFF_SECONDS = 30.0
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 SOURCE_RE = re.compile(r"^Source:\s*(.+?)\s*$", re.IGNORECASE)
@@ -403,10 +412,22 @@ def embed_text(chunk: dict) -> str:
 def embed_batch(texts: list[str], embeddings) -> list[list[float]]:
     capped = [t[:EMBED_INPUT_CAP] for t in texts]
     if not _is_llamacpp_embeddings(embeddings):
-        return embeddings.embed_documents(capped)
+        vectors = embeddings.embed_documents(capped)
+        if len(vectors) == len(capped):
+            return vectors
+        if len(capped) == 1:
+            raise RuntimeError(f"Embedding returned {len(vectors)} vectors for 1 chunk")
+        midpoint = len(capped) // 2
+        return embed_batch(capped[:midpoint], embeddings) + embed_batch(capped[midpoint:], embeddings)
 
     try:
-        return embeddings.embed_documents(capped)
+        vectors = embeddings.embed_documents(capped)
+        if len(vectors) == len(capped):
+            return vectors
+        if len(capped) == 1:
+            raise RuntimeError(f"Embedding returned {len(vectors)} vectors for 1 chunk")
+        midpoint = len(capped) // 2
+        return embed_batch(capped[:midpoint], embeddings) + embed_batch(capped[midpoint:], embeddings)
     except httpx.HTTPStatusError:
         if len(capped) == 1:
             return [_embed_one_with_fallback(capped[0], embeddings)]
@@ -433,6 +454,274 @@ def _embed_one_with_fallback(text: str, embeddings) -> list[float]:
     raise RuntimeError("Embedding fallback failed")
 
 
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    retry_after = response.headers.get("Retry-After")
+    if not retry_after:
+        return None
+    try:
+        return float(retry_after)
+    except ValueError:
+        return None
+
+
+def _is_retryable_quota_error(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 429:
+        return True
+    text = str(exc)
+    return "429" in text or "RESOURCE_EXHAUSTED" in text
+
+
+def embed_batch_with_retry(
+    texts: list[str],
+    embeddings,
+    *,
+    max_attempts: int = EMBED_RETRY_ATTEMPTS,
+    initial_backoff_seconds: float = EMBED_RETRY_BACKOFF_SECONDS,
+    sleep=time.sleep,
+) -> list[list[float]]:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return embed_batch(texts, embeddings)
+        except Exception as exc:
+            if attempt >= max_attempts or not _is_retryable_quota_error(exc):
+                raise
+            base = _retry_after_seconds(exc) or initial_backoff_seconds * (2 ** (attempt - 1))
+            wait_seconds = base * (0.75 + random.random() * 0.5)
+            print(
+                f"\nEmbedding quota/rate limit hit; retrying in {wait_seconds:.0f}s "
+                f"(attempt {attempt + 1}/{max_attempts})...",
+                flush=True,
+            )
+            sleep(wait_seconds)
+
+    raise RuntimeError("Embedding retry loop exited unexpectedly")
+
+
+def load_checkpoint(path: Path) -> dict:
+    if not path.exists():
+        return {"completed_chunk_ids": []}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_checkpoint(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = {
+        "completed_chunk_ids": sorted(set(state.get("completed_chunk_ids", []))),
+    }
+    if state.get("metadata"):
+        normalized["metadata"] = state["metadata"]
+    path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _build_points(chunks: list[dict], vectors: list[list[float]]) -> list[PointStruct]:
+    if len(vectors) != len(chunks):
+        raise RuntimeError(f"Embedding returned {len(vectors)} vectors for {len(chunks)} chunks")
+    return [
+        PointStruct(
+            id=chunk["id"],
+            vector=vector,
+            payload=chunk,
+        )
+        for chunk, vector in zip(chunks, vectors)
+    ]
+
+
+def _iter_batches(items: list, batch_size: int):
+    for start in range(0, len(items), batch_size):
+        yield items[start : start + batch_size]
+
+
+def chunks_fingerprint(chunks: list[dict]) -> str:
+    digest = hashlib.sha256()
+    for chunk in chunks:
+        digest.update(str(chunk.get("id", "")).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(chunk.get("chunk_id", "")).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(chunk.get("source", "")).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(chunk.get("content", "")).encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def checkpoint_metadata(
+    *,
+    collection_name: str,
+    source_url: str,
+    embedding_provider: str,
+    embedding_model: str,
+    embedding_dim: int,
+    chunks: list[dict],
+) -> dict:
+    return {
+        "collection_name": collection_name,
+        "source_url": source_url,
+        "embedding_provider": embedding_provider,
+        "embedding_model": embedding_model,
+        "embedding_dim": embedding_dim,
+        "chunk_count": len(chunks),
+        "chunks_fingerprint": chunks_fingerprint(chunks),
+    }
+
+
+def _validate_checkpoint_metadata(state: dict, expected_metadata: dict | None) -> None:
+    if not expected_metadata:
+        return
+    actual_metadata = state.get("metadata")
+    if actual_metadata and actual_metadata != expected_metadata:
+        raise RuntimeError(
+            "Existing checkpoint does not match this indexing run. "
+            "Start without --resume to rebuild the collection."
+        )
+
+
+def _collection_vector_size(collection_info) -> int | None:
+    current = collection_info
+    for attr in ("config", "params", "vectors"):
+        current = current.get(attr) if isinstance(current, dict) else getattr(current, attr, None)
+        if current is None:
+            return None
+    if isinstance(current, dict):
+        value = current.get("size")
+    else:
+        value = getattr(current, "size", None)
+    return value if isinstance(value, int) else None
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _progress_line(
+    *,
+    indexed: int,
+    total: int,
+    batch_count: int,
+    batch_seconds: float,
+    elapsed_seconds: float,
+    start_indexed: int,
+) -> str:
+    run_indexed = max(0, indexed - start_indexed)
+    avg_seconds_per_chunk = elapsed_seconds / run_indexed if run_indexed else 0.0
+    batch_seconds_per_chunk = batch_seconds / batch_count if batch_count else 0.0
+    eta_seconds = (total - indexed) * avg_seconds_per_chunk if avg_seconds_per_chunk else 0.0
+    return (
+        f"  Embedded+upserted {indexed}/{total} | "
+        f"batch {_format_duration(batch_seconds)} ({batch_seconds_per_chunk:.2f}s/chunk) | "
+        f"avg {avg_seconds_per_chunk:.2f}s/chunk | "
+        f"ETA {_format_duration(eta_seconds)}"
+    )
+
+
+def index_chunks_incrementally(
+    chunks: list[dict],
+    embeddings,
+    qdrant,
+    *,
+    collection_name: str,
+    checkpoint_path: Path,
+    embed_batch_size: int = EMBED_BATCH,
+    upsert_batch_size: int = UPSERT_BATCH,
+    embed_workers: int = EMBED_WORKERS,
+    embed_batch_fn=embed_batch_with_retry,
+    checkpoint_metadata: dict | None = None,
+) -> int:
+    state = load_checkpoint(checkpoint_path)
+    _validate_checkpoint_metadata(state, checkpoint_metadata)
+    completed_ids = set(state.get("completed_chunk_ids", []))
+    pending = [chunk for chunk in chunks if chunk["id"] not in completed_ids]
+    if completed_ids:
+        print(f"  Resuming: {len(completed_ids)} chunks already upserted, {len(pending)} pending")
+
+    indexed = len(completed_ids)
+    start_indexed = indexed
+    t0 = time.perf_counter()
+    total = len(chunks)
+
+    checkpoint_lock = threading.Lock()
+
+    def _embed_and_upsert(batch: list[dict]) -> int:
+        nonlocal indexed
+        batch_t0 = time.perf_counter()
+        vectors = embed_batch_fn([embed_text(c) for c in batch], embeddings)
+        points = _build_points(batch, vectors)
+
+        with checkpoint_lock:
+            for upsert_points in _iter_batches(points, upsert_batch_size):
+                qdrant.upsert(collection_name=collection_name, points=upsert_points)
+                completed_ids.update(point.id for point in upsert_points)
+            save_checkpoint(
+                checkpoint_path,
+                {
+                    "completed_chunk_ids": list(completed_ids),
+                    "metadata": checkpoint_metadata,
+                },
+            )
+            indexed = len(completed_ids)
+
+        return int(time.perf_counter() - batch_t0)
+
+    batches = list(_iter_batches(pending, embed_batch_size))
+    with ThreadPoolExecutor(max_workers=embed_workers) as executor:
+        futures = {executor.submit(_embed_and_upsert, batch): batch for batch in batches}
+        for future in as_completed(futures):
+            batch_seconds = future.result()
+            elapsed = time.perf_counter() - t0
+            batch = futures[future]
+            with checkpoint_lock:
+                current_indexed = indexed
+            print(
+                _progress_line(
+                    indexed=current_indexed,
+                    total=total,
+                    batch_count=len(batch),
+                    batch_seconds=batch_seconds,
+                    elapsed_seconds=elapsed,
+                    start_indexed=start_indexed,
+                ),
+                end="\r",
+                flush=True,
+            )
+
+    return indexed
+
+
+def ensure_collection(qdrant, collection_name: str, dim: int, *, resume: bool) -> None:
+    exists = qdrant.collection_exists(collection_name)
+    if resume and not exists:
+        raise RuntimeError(
+            f"Cannot resume indexing because collection '{collection_name}' does not exist. "
+            "Run without --resume to rebuild it."
+        )
+    if resume and hasattr(qdrant, "get_collection"):
+        vector_size = _collection_vector_size(qdrant.get_collection(collection_name))
+        if vector_size is not None and vector_size != dim:
+            raise RuntimeError(
+                f"Cannot resume indexing because collection '{collection_name}' has vector size "
+                f"{vector_size}, but current embeddings produce {dim} dimensions."
+            )
+    if exists and not resume:
+        qdrant.delete_collection(collection_name)
+        exists = False
+    if not exists:
+        qdrant.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+        )
+
+
 def _print_chunk_stats(chunks: list[dict]) -> None:
     avg_chars = sum(c["char_count"] for c in chunks) / len(chunks)
     code_chunks = sum(1 for c in chunks if c["has_code"])
@@ -441,7 +730,7 @@ def _print_chunk_stats(chunks: list[dict]) -> None:
     print(f"  avg chars/chunk: {avg_chars:.0f} | max chars: {max_chars} | code chunks: {code_chunks}")
 
 
-def run():
+def main():
     settings = Settings.from_env()
     parser = argparse.ArgumentParser()
     parser.add_argument("--stats-only", action="store_true", help="Baixa e chunkifica sem recriar o indice.")
@@ -452,9 +741,13 @@ def run():
     parser.add_argument("--google-embedding-model", default=settings.google_embedding_model)
     parser.add_argument("--google-embedding-dimensions", type=int, default=settings.google_output_dimensionality)
     parser.add_argument("--llamacpp-url", default=settings.llamacpp_url)
+    parser.add_argument("--embed-batch", type=int, default=EMBED_BATCH, help="Chunks por chamada de embedding.")
+    parser.add_argument("--embed-workers", type=int, default=EMBED_WORKERS, help="Requests de embedding simultâneos.")
+    parser.add_argument("--resume", action="store_true", help="Continua do ultimo batch enviado ao Qdrant.")
+    parser.add_argument("--checkpoint-path", type=Path, default=CHECKPOINT_PATH)
     args = parser.parse_args()
 
-    qdrant = QdrantClient(url=settings.qdrant_url)
+    qdrant = QdrantClient(**settings.qdrant_client_kwargs())
     embeddings = create_embeddings(
         args.embedding_provider,
         llamacpp_url=args.llamacpp_url,
@@ -474,47 +767,38 @@ def run():
         print(f"  limiting index to {len(chunks)} chunks")
 
     print("Getting embedding dimension...")
-    dim = len(embed_batch(["test"], embeddings)[0])
+    dim = len(embed_batch_with_retry(["test"], embeddings)[0])
     print(f"  Embedding dim: {dim}")
 
     print(f"Creating collection '{settings.collection}'...")
-    if qdrant.collection_exists(settings.collection):
-        qdrant.delete_collection(settings.collection)
-    qdrant.create_collection(
+    ensure_collection(qdrant, settings.collection, dim, resume=args.resume)
+    if not args.resume and args.checkpoint_path.exists():
+        args.checkpoint_path.unlink()
+
+    print(f"Embedding and uploading {len(chunks)} chunks (batch={args.embed_batch})...")
+    t0 = time.perf_counter()
+    indexed = index_chunks_incrementally(
+        chunks,
+        embeddings,
+        qdrant,
         collection_name=settings.collection,
-        vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+        checkpoint_path=args.checkpoint_path,
+        embed_batch_size=args.embed_batch,
+        upsert_batch_size=UPSERT_BATCH,
+        embed_workers=args.embed_workers,
+        checkpoint_metadata=checkpoint_metadata(
+            collection_name=settings.collection,
+            source_url=args.source_url,
+            embedding_provider=args.embedding_provider,
+            embedding_model=args.google_embedding_model,
+            embedding_dim=dim,
+            chunks=chunks,
+        ),
     )
 
-    print(f"Embedding {len(chunks)} chunks (batch={EMBED_BATCH})...")
-    points: list[PointStruct] = []
-    t0 = time.perf_counter()
-
-    for start in range(0, len(chunks), EMBED_BATCH):
-        batch = chunks[start : start + EMBED_BATCH]
-        vectors = embed_batch([embed_text(c) for c in batch], embeddings)
-
-        for j, (chunk, vector) in enumerate(zip(batch, vectors)):
-            points.append(
-                PointStruct(
-                    id=chunk["id"],
-                    vector=vector,
-                    payload=chunk,
-                )
-            )
-
-        done = min(start + EMBED_BATCH, len(chunks))
-        elapsed = time.perf_counter() - t0
-        rate = done / elapsed
-        eta = (len(chunks) - done) / rate if rate > 0 else 0
-        print(f"  Embedded {done}/{len(chunks)}  {rate:.0f} chunks/s  ETA {eta:.0f}s", end="\r", flush=True)
-
-    print(f"\nUploading to Qdrant...")
-    for start in range(0, len(points), UPSERT_BATCH):
-        qdrant.upsert(collection_name=settings.collection, points=points[start : start + UPSERT_BATCH])
-
     total = time.perf_counter() - t0
-    print(f"Done — {len(points)} chunks indexed in {total:.0f}s")
+    print(f"\nDone — {indexed} chunks indexed in {total:.0f}s")
 
 
 if __name__ == "__main__":
-    run()
+    main()

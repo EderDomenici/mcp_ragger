@@ -53,6 +53,84 @@ class RetrievalTests(unittest.TestCase):
 
         self.assertEqual(ranked[0], specific_langchain_match)
 
+    def test_rerank_penalizes_javascript_chunk_when_query_requests_python(self):
+        python_chunk = SimpleNamespace(
+            score=0.80,
+            payload={
+                "title": "Interrupts",
+                "source": "https://docs.langchain.com/oss/python/langgraph/interrupts",
+                "content": "Use interrupt() to pause and resume.",
+            },
+        )
+        javascript_chunk = SimpleNamespace(
+            score=0.81,
+            payload={
+                "title": "Interrupts",
+                "source": "https://docs.langchain.com/oss/javascript/langgraph/interrupts",
+                "content": "Use interrupt() to pause and resume.",
+            },
+        )
+
+        ranked = retrieval.rerank(
+            "In Python LangGraph, how do I pause execution for human input?",
+            [javascript_chunk, python_chunk],
+            top_k=2,
+        )
+
+        self.assertEqual(ranked[0], python_chunk)
+
+    def test_rerank_penalizes_python_chunk_when_query_requests_javascript(self):
+        python_chunk = SimpleNamespace(
+            score=0.81,
+            payload={
+                "title": "Streaming",
+                "source": "https://docs.langchain.com/oss/python/langgraph/streaming",
+                "content": "Stream values from a LangGraph app.",
+            },
+        )
+        javascript_chunk = SimpleNamespace(
+            score=0.80,
+            payload={
+                "title": "Streaming",
+                "source": "https://docs.langchain.com/oss/javascript/langgraph/streaming",
+                "content": "Stream values from a LangGraph app.",
+            },
+        )
+
+        ranked = retrieval.rerank(
+            "How do I stream values from a LangGraph app in JavaScript?",
+            [python_chunk, javascript_chunk],
+            top_k=2,
+        )
+
+        self.assertEqual(ranked[0], javascript_chunk)
+
+    def test_rerank_does_not_penalize_when_query_has_no_language_signal(self):
+        python_chunk = SimpleNamespace(
+            score=0.85,
+            payload={
+                "title": "Checkpoints",
+                "source": "https://docs.langchain.com/oss/python/langgraph/persistence",
+                "content": "Checkpoints store graph state.",
+            },
+        )
+        javascript_chunk = SimpleNamespace(
+            score=0.90,
+            payload={
+                "title": "Checkpoints",
+                "source": "https://docs.langchain.com/oss/javascript/langgraph/persistence",
+                "content": "Checkpoints store graph state.",
+            },
+        )
+
+        ranked = retrieval.rerank(
+            "Where do LangGraph checkpoints fit into durable execution?",
+            [python_chunk, javascript_chunk],
+            top_k=2,
+        )
+
+        self.assertEqual(ranked[0], javascript_chunk)
+
     def test_rerank_filters_to_top_k(self):
         results = [
             SimpleNamespace(score=0.90, payload={"title": "A", "content": "alpha"}),

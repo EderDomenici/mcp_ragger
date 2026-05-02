@@ -35,7 +35,7 @@ class LlamaCppEmbeddings:
 class GoogleGenAIEmbeddings:
     def __init__(
         self,
-        model: str = "models/gemini-embedding-001",
+        model: str = "models/gemini-embedding-2",
         output_dimensionality: int | None = None,
     ) -> None:
         try:

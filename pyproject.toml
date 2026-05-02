@@ -16,3 +16,8 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.scripts]
+langchain-rag-mcp = "langchain_rag_mcp.server:main"
+langchain-rag-indexer = "langchain_rag_mcp.indexer:main"
+langchain-rag-start = "langchain_rag_mcp.startup:cli_main"

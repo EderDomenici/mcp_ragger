@@ -24,9 +24,10 @@ def _env_float_default(env: Mapping[str, str], key: str, default: float) -> floa
 @dataclass(frozen=True)
 class Settings:
     qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str | None = None
     embedding_provider: str = "google"
     llamacpp_url: str = "http://localhost:8080/v1/embeddings"
-    google_embedding_model: str = "models/gemini-embedding-001"
+    google_embedding_model: str = "models/gemini-embedding-2"
     google_output_dimensionality: int | None = None
     collection: str = "langchain_docs"
     docs_url: str = "https://docs.langchain.com/llms-full.txt"
@@ -35,7 +36,7 @@ class Settings:
     chunk_cap: int = 600
     min_score: float = 0.60
     min_query_term_coverage: float = 0.75
-    db_path: Path = Path(__file__).resolve().parents[2] / "metrics.db"
+    db_path: Path = Path(__file__).resolve().parents[2] / "data" / "metrics.db"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -44,6 +45,7 @@ class Settings:
             env = os.environ
         return cls(
             qdrant_url=env.get("QDRANT_URL", cls.qdrant_url),
+            qdrant_api_key=env.get("QDRANT_API_KEY") or None,
             embedding_provider=env.get("EMBEDDING_PROVIDER", cls.embedding_provider),
             llamacpp_url=env.get("LLAMACPP_URL", cls.llamacpp_url),
             google_embedding_model=env.get("GOOGLE_EMBEDDING_MODEL", cls.google_embedding_model),
@@ -60,3 +62,9 @@ class Settings:
                 cls.min_query_term_coverage,
             ),
         )
+
+    def qdrant_client_kwargs(self) -> dict[str, str]:
+        kwargs = {"url": self.qdrant_url}
+        if self.qdrant_api_key:
+            kwargs["api_key"] = self.qdrant_api_key
+        return kwargs
