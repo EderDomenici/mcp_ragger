@@ -2,7 +2,9 @@
 
 *Read in English | [Leia em Português](README.pt-br.md)*
 
-An MCP (Model Context Protocol) server exposing a RAG (Retrieval-Augmented Generation) pipeline over the official documentation of LangChain, LangGraph, and LangSmith. 
+> GitHub: [EderDomenici/mcp_ragger](https://github.com/EderDomenici/mcp_ragger)
+
+An MCP (Model Context Protocol) server exposing a RAG (Retrieval-Augmented Generation) pipeline over the official documentation of LangChain, LangGraph, and LangSmith.
 
 ## Features
 - **MCP Integration:** Exposes documentation retrieval capabilities seamlessly to MCP-compatible clients.

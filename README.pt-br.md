@@ -2,6 +2,8 @@
 
 *[Read in English](README.md) | Leia em Português*
 
+> GitHub: [EderDomenici/mcp_ragger](https://github.com/EderDomenici/mcp_ragger)
+
 Um servidor MCP (Model Context Protocol) que expõe um pipeline RAG (Retrieval-Augmented Generation) sobre a documentação oficial do LangChain, LangGraph e LangSmith.
 
 ## Funcionalidades

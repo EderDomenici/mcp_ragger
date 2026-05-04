@@ -5,6 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "langchain-rag-mcp"
 version = "0.1.0"
+description = "MCP server exposing a RAG pipeline over LangChain, LangGraph and LangSmith official documentation"
+authors = [{ name = "Eder Domenici", email = "domenicieder@gmail.com" }]
 requires-python = ">=3.11"
 dependencies = [
   "mcp",
@@ -13,6 +15,16 @@ dependencies = [
   "langchain-google-genai",
   "python-dotenv",
 ]
+
+[project.optional-dependencies]
+eval = [
+  "openai",
+  "ragas",
+]
+
+[project.urls]
+Homepage = "https://github.com/EderDomenici/mcp_ragger"
+Repository = "https://github.com/EderDomenici/mcp_ragger"
 
 [tool.setuptools.packages.find]
 where = ["src"]
